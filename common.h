@@ -30,4 +30,14 @@
 #define GET_PTE_PFN(pte)    ((pte) & PTE_PFN_MASK)
 #define CREATE_PTE(pfn)     ((uint8_t)(0x80 | ((pfn) & 0x7F))) // Present=1 설정
 
+// --- 교체 정책 정의 ---
+typedef enum {
+    POLICY_RR,
+    POLICY_LRU
+} Policy;
+
+// 전역 변수 선언 (main.c에 정의)
+extern Policy g_policy;
+extern uint64_t g_time; // LRU용 시뮬레이션 시간 (메모리 액세스 횟수)
+
 #endif

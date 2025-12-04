@@ -1,11 +1,12 @@
+/* components/tlb.c */
 #include "tlb.h"
-#include "log.h" // 제공된 로그 함수 사용
+#include "log.h"
 #include <stdio.h>
-#include "../common.h"
+#include "../common.h" // g_policy, g_time 외부 변수 참조
 
 // 전역 변수 선언
 TLB_Entry tlb[TLB_SIZE];
-int tlb_rr_idx = 0; // Round-Robin 교체 포인터 (0 ~ 15)
+int tlb_rr_idx = 0; // RR 교체 포인터
 
 // 1. TLB 초기화
 void init_tlb() {
@@ -13,54 +14,78 @@ void init_tlb() {
         tlb[i].valid = false;
         tlb[i].vpn = 0;
         tlb[i].pfn = 0;
+        tlb[i].last_access_time = 0; // [LRU] 초기화
     }
-    tlb_rr_idx = 0; // 포인터 초기화
+    tlb_rr_idx = 0;
 }
 
 // 2. TLB 검색 (Lookup)
-// 반환값: Hit이면 PFN, Miss이면 -1
 int search_tlb(uint16_t vpn) {
     for (int i = 0; i < TLB_SIZE; i++) {
         // Valid하고 VPN이 일치하면 Hit!
         if (tlb[i].valid && tlb[i].vpn == vpn) {
-            log_tlb_hit(vpn, tlb[i].pfn); // [Log] TLB Hit
+            log_tlb_hit(vpn, tlb[i].pfn);
             
-            // RR 정책에서는 Hit 되어도 포인터나 순서가 변하지 않음 (LRU와 차이점)
+            // [LRU] Hit 발생 시 접근 시간 갱신 (RR일 땐 무시됨)
+            if (g_policy == POLICY_LRU) {
+                tlb[i].last_access_time = g_time;
+            }
             return tlb[i].pfn;
         }
     }
 
-    // 못 찾았으면 Miss
-    log_tlb_miss(vpn); // [Log] TLB Miss
+    log_tlb_miss(vpn);
     return -1;
 }
 
 // 3. TLB 업데이트 (Replacement)
-// RR 정책: 현재 포인터 위치의 엔트리를 덮어쓰고 포인터 증가
 void update_tlb(uint16_t vpn, uint16_t pfn) {
-    // 1. 현재 RR 포인터가 가리키는 위치에 덮어쓰기
-    tlb[tlb_rr_idx].vpn = vpn;
-    tlb[tlb_rr_idx].pfn = pfn;
-    tlb[tlb_rr_idx].valid = true;
+    int target_idx = -1;
 
-    // [Log] TLB Update
+    // A. 빈 공간이 있는지 먼저 확인
+    for (int i = 0; i < TLB_SIZE; i++) {
+        if (!tlb[i].valid) {
+            target_idx = i;
+            break;
+        }
+    }
+
+    // B. 빈 공간이 없다면 교체 정책에 따라 Victim 선정
+    if (target_idx == -1) {
+        if (g_policy == POLICY_RR) {
+            // Round-Robin 방식
+            target_idx = tlb_rr_idx;
+            tlb_rr_idx = (tlb_rr_idx + 1) % TLB_SIZE;
+        } 
+        else if (g_policy == POLICY_LRU) {
+            // [LRU] last_access_time이 가장 작은 엔트리 찾기
+            uint64_t min_time = UINT64_MAX;
+            for (int i = 0; i < TLB_SIZE; i++) {
+                if (tlb[i].last_access_time < min_time) {
+                    min_time = tlb[i].last_access_time;
+                    target_idx = i;
+                }
+            }
+        }
+    }
+
+    // C. 엔트리 업데이트
+    tlb[target_idx].vpn = vpn;
+    tlb[target_idx].pfn = pfn;
+    tlb[target_idx].valid = true;
+    
+    // [LRU] 새로운 엔트리가 들어왔으므로 현재 시간으로 갱신
+    if (g_policy == POLICY_LRU) {
+        tlb[target_idx].last_access_time = g_time;
+    }
+
     log_tlb_update(vpn, pfn);
-
-    // 2. RR 포인터 이동 (Circular Buffer)
-    tlb_rr_idx = (tlb_rr_idx + 1) % TLB_SIZE;
 }
 
 void invalidate_tlb_by_vpn(uint16_t vpn) {
-    // 16개 엔트리를 모두 검사
     for (int i = 0; i < TLB_SIZE; i++) {
-        // 유효하고(valid), VPN이 일치한다면
         if (tlb[i].valid && tlb[i].vpn == vpn) {
             tlb[i].valid = false;
-            // 주의: 여기서 break를 하면 안 됩니다. 
-            // 이론상 TLB에 중복 항목이 없어야 하지만, 안전하게 다 검사하거나
-            // 구현에 따라 중복이 없음을 보장한다면 break 가능.
-            // 여기서는 안전하게 break 없이 진행합니다.
         }
     }
-    // 별도의 로그 출력은 지시서에 명시되지 않았으므로 하지 않음.
 }

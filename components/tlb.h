@@ -9,7 +9,7 @@ typedef struct {
     uint16_t vpn;           // VPN (상위 9비트)
     uint16_t pfn;           // PFN (하위 7비트)
     bool valid;             // 유효 비트
-    // uint64_t last_access_time; // LRU용 (Part 1 RR에서는 미사용)
+    uint64_t last_access_time; // [LRU] 마지막 접근 시간
 } TLB_Entry;
 
 // TLB 관련 상수

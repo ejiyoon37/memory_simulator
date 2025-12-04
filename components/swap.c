@@ -2,56 +2,74 @@
 #include "swap.h"
 #include "memory.h"
 #include "tlb.h"
-#include "page_table.h" // invalidate_pte_mapping 함수 필요
+#include "page_table.h"
 #include "../common.h"
 #include <stdio.h>
 
-// Round-Robin Victim Pointer
-static int swap_rr_idx = 0;
+static int swap_rr_idx = 0; // RR Victim Pointer
 
-// [Internal] 비트마스크 읽기 헬퍼
+// [LRU] 각 프레임의 마지막 접근 시간 기록용 배열
+static uint64_t frame_last_access[NUM_FRAMES];
+
+// [Internal] 비트마스크 읽기 헬퍼 (memory.c의 Helper와 유사 역할)
+// 실제 구현은 memory.c의 physical_memory에 접근해야 하므로, 
+// memory.h에 선언된 check_swappable 함수나 매커니즘을 사용하는 것이 좋으나,
+// 여기서는 내부 static 함수로 구현합니다.
 static bool check_swappable(int pfn) {
     int byte_idx = pfn / 8;
     int bit_idx = pfn % 8;
-    // Frame 0, 1 영역 읽기
     return (physical_memory[byte_idx] >> bit_idx) & 1;
+}
+
+// [LRU] 프레임 접근 시간 갱신
+void acknowledge_frame_access(int pfn) {
+    if (pfn >= 0 && pfn < NUM_FRAMES) {
+        frame_last_access[pfn] = g_time;
+    }
 }
 
 int swap_out() {
     int victim_pfn = -1;
-    int checked_count = 0;
 
-    // 1. Round-Robin 방식으로 "스왑 가능한" 프레임 탐색
-    while (checked_count < NUM_FRAMES) {
-        int curr = swap_rr_idx;
+    if (g_policy == POLICY_RR) {
+        // --- Round Robin Policy ---
+        int checked_count = 0;
+        while (checked_count < NUM_FRAMES) {
+            int curr = swap_rr_idx;
+            swap_rr_idx = (swap_rr_idx + 1) % NUM_FRAMES;
+            checked_count++;
 
-        // 다음 victim 후보로 인덱스 이동
-        swap_rr_idx = (swap_rr_idx + 1) % NUM_FRAMES;
-        checked_count++;
-
-        // bitmask 상에서 swappable=1 인 프레임만 후보
-        if (check_swappable(curr)) {
-            victim_pfn = curr;
-            break;
+            if (check_swappable(curr)) {
+                victim_pfn = curr;
+                break;
+            }
+        }
+    } 
+    else if (g_policy == POLICY_LRU) {
+        // --- LRU Policy ---
+        // Swappable한 프레임 중 last_access_time이 가장 작은 프레임 탐색
+        uint64_t min_time = UINT64_MAX;
+        
+        for (int i = 0; i < NUM_FRAMES; i++) {
+            if (check_swappable(i)) {
+                if (frame_last_access[i] < min_time) {
+                    min_time = frame_last_access[i];
+                    victim_pfn = i;
+                }
+            }
         }
     }
 
-    // 스왑 가능한 프레임을 못 찾은 경우 (이론상 거의 안 나와야 함)
     if (victim_pfn == -1) {
         fprintf(stderr, "Error: No swappable frames found! Memory deadlock.\n");
         return -1;
     }
 
-    // 2. Victim 프레임에 매핑된 VPN 조회
+    // Victim 처리
     uint16_t victim_vpn = get_frame_owner(victim_pfn);
-
-    // 3. TLB / Page Table에서 해당 VPN 무효화
-    invalidate_tlb_by_vpn(victim_vpn);   // TLB 엔트리 제거
-    invalidate_pt_mapping(victim_vpn);   // Page Table present 비트 0
-
-    // 4. 프레임을 free 상태로 변경 (다음 allocate_free_frame에서 재사용)
+    invalidate_tlb_by_vpn(victim_vpn);
+    invalidate_pt_mapping(victim_vpn);
     free_frame(victim_pfn);
 
-    // 5. 확보된 빈 프레임 번호 반환
     return victim_pfn;
 }
